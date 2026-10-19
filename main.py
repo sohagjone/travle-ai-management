@@ -19,7 +19,7 @@ from utils.display import (
     FLIGHT_SORTS, HOTEL_SORTS, airline_options, amenity_options, day_offset, filter_flights,
     filter_hotels, flight_highlights, fmt_date, fmt_time, hotel_highlights, md_link, stops_text,
 )
-from utils.styles import CSS, HERO
+from utils.styles import CSS, FEATURE_CHIPS, HERO
 from utils.export_reports import build_all_exports
 from utils.report_data import (
     FLIGHT_COLUMNS,
@@ -548,10 +548,10 @@ def main():
     st.set_page_config(page_title="AI Travel Analysis", page_icon="✈️", layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
     st.markdown(HERO, unsafe_allow_html=True)
+    form = render_form()
+    st.markdown(FEATURE_CHIPS, unsafe_allow_html=True)
     if not get_secret("SERPAPI_API_KEY"):
         st.warning("SERPAPI_API_KEY is not configured, so searches will fail until it is added (see README).")
-
-    form = render_form()
     if form["submit"]:
         run_search(form)
 
