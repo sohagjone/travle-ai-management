@@ -1,5 +1,6 @@
 import asyncio
 import math
+import time
 import json
 from html import escape
 import re
@@ -68,9 +69,24 @@ def _download_button(label: str, data: bytes, file_name: str, mime: str, key: st
 
 
 @st.cache_data(ttl=7 * 24 * 3600, show_spinner=False)
+def _photo_hit(code: str):
+    """Cached for a week. Raises when nothing is found, so a failure is never cached for long."""
+    photo = find_airport_photo(code)
+    if photo is None:
+        raise LookupError(code)
+    return photo
+
+
 def cached_airport_photo(code: str):
-    """Photo lookups are cached for a week so they never slow down reruns."""
-    return find_airport_photo(code)
+    """Photo dict or None. A miss is not retried for 10 minutes in this session (keeps reruns fast)."""
+    misses = st.session_state.setdefault("_photo_misses", {})
+    if time.time() - misses.get(code, 0) < 600:
+        return None
+    try:
+        return _photo_hit(code)
+    except LookupError:
+        misses[code] = time.time()
+        return None
 
 
 FILTER_PREFIXES = ("flt_", "hflt_", "sort_", "show_all_")
@@ -265,17 +281,18 @@ def _range_slider(container, label: str, values, key: str, step: int = 1):
     return container.slider(label, lo, hi, (lo, hi), step=step, key=key), (lo, hi)
 
 
-def _airport_tile(code: str, title: str) -> None:
-    """Photo (from Wikipedia) of the airport chosen in the dropdown, or a clean placeholder."""
+def _airport_tile(code: str, title: str, photo: Optional[Dict[str, str]]) -> None:
+    """Photo of the airport chosen in the dropdown, or a clean placeholder when none could be found."""
     info = airport_info(code) or {}
     st.caption(title)
-    photo = cached_airport_photo(code)
     if photo:
         st.image(photo["url"], use_container_width=True)
-        st.caption(f"Photo: [Wikipedia]({photo['page']})")
+        credit = photo.get("credit", "Wikipedia")
+        st.caption(f"Photo: [{credit}]({photo['page']})" if photo.get("page") else f"Photo: {credit}")
     else:
         st.markdown(
-            f'<div class="photo-ph">{escape(code)}<small>photo not available</small></div>', unsafe_allow_html=True
+            f'<div class="photo-ph">✈ {escape(code)}<small>{escape(info.get("name", ""))}</small></div>',
+            unsafe_allow_html=True,
         )
     st.markdown(f"**{_md_safe(code)}** · {_md_safe(info.get('city') or '')}")
 
@@ -295,10 +312,13 @@ def render_flights(report: Dict[str, Any]) -> None:
     m1.metric("Flights found", len(flights))
     m2.metric("Cheapest", fmt_money(cheapest["price"], currency) if cheapest else "n/a", cheapest["airline"] if cheapest else None, delta_color="off")
     m3.metric("Fastest", fastest["duration"] if fastest else "n/a", fastest["airline"] if fastest else None, delta_color="off")
+    with st.spinner("Loading airport photos..."):
+        origin_photo = cached_airport_photo(req["origin"])
+        destination_photo = cached_airport_photo(req["destination"])
     with m4:
-        _airport_tile(req["origin"], "Origin airport")
+        _airport_tile(req["origin"], "Origin airport", origin_photo)
     with m5:
-        _airport_tile(req["destination"], "Destination airport")
+        _airport_tile(req["destination"], "Destination airport", destination_photo)
 
     # ----- filters
     with st.expander("🔎 Filter flights", expanded=True):
