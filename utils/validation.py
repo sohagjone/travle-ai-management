@@ -100,14 +100,50 @@ def _clean_airport_name(name: str) -> str:
     return name.split(" / ")[-1].strip() if " / " in name else name
 
 
+# Friendlier country names than the official ISO ones (e.g. "Korea, Republic of").
+_COUNTRY_OVERRIDES = {
+    "US": "United States", "GB": "United Kingdom", "KR": "South Korea", "KP": "North Korea",
+    "RU": "Russia", "VN": "Vietnam", "IR": "Iran", "SY": "Syria", "TW": "Taiwan", "TZ": "Tanzania",
+    "BO": "Bolivia", "VE": "Venezuela", "MD": "Moldova", "LA": "Laos", "PS": "Palestine",
+    "FM": "Micronesia", "BN": "Brunei", "CD": "DR Congo", "CG": "Congo", "CI": "Ivory Coast",
+    "CV": "Cape Verde", "MK": "North Macedonia", "TR": "Turkey", "HK": "Hong Kong", "MO": "Macau",
+}
+
+
+@lru_cache(maxsize=None)
+def country_name(iso_code: str) -> str:
+    """'BD' -> 'Bangladesh'. Falls back to the ISO code if the name is unknown."""
+    iso_code = (iso_code or "").upper()
+    if iso_code in _COUNTRY_OVERRIDES:
+        return _COUNTRY_OVERRIDES[iso_code]
+    try:
+        import pycountry
+
+        country = pycountry.countries.get(alpha_2=iso_code)
+        if country:
+            return getattr(country, "common_name", None) or country.name
+    except Exception:
+        pass
+    return iso_code
+
+
+def _label_for(code: str, info: Dict[str, Any]) -> Optional[str]:
+    """'DAC-Hazrat Shahjalal International Airport, Bangladesh'."""
+    name = _clean_airport_name(info.get("name", ""))
+    if not name:
+        return None
+    country = country_name(info.get("country", ""))
+    return f"{code}-{name}, {country}" if country else f"{code}-{name}"
+
+
 @lru_cache(maxsize=1)
 def airport_choices() -> tuple:
-    """(labels, label_to_code) for the dropdown. Label pattern: 'DAC-Hazrat Shahjalal International Airport'."""
+    """(labels, label_to_code) for the dropdown. Label pattern: 'DAC-Hazrat Shahjalal International Airport, Bangladesh'."""
     label_to_code = {}
     for code, info in sorted(_AIRPORTS.items()):
-        name = _clean_airport_name(info.get("name", ""))
-        if name:
-            label_to_code[f"{code}-{name}"] = code
+        label = _label_for(code, info)
+        if label:
+            label_to_code[label] = code
     return list(label_to_code.keys()), label_to_code
 
 
@@ -115,8 +151,7 @@ def airport_label(code: str) -> Optional[str]:
     info = airport_info(code)
     if not info:
         return None
-    name = _clean_airport_name(info.get("name", ""))
-    return f"{normalise_airport_code(code)}-{name}" if name else None
+    return _label_for(normalise_airport_code(code), info)
 
 
 def code_from_label(label: Optional[str]) -> str:
