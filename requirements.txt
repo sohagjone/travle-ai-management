@@ -8,3 +8,4 @@ openpyxl>=3.1
 python-docx>=1.1
 airportsdata>=20240101
 pandas>=2.0
+pycountry>=23.12
