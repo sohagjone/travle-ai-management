@@ -26,7 +26,7 @@ Run the tests (all provider calls are mocked): `pip install -r requirements-dev.
 | Tab | What it shows |
 |---|---|
 | **Chat agent** | An AI agent with tools. It remembers the trip, so follow-ups work: *"what's the weather there?"*, *"make it 3 adults"*, *"show the total in EUR"*. Under each answer, **tool calls** lists exactly what it looked up. Needs an AI model. |
-| **Plan a trip (workflow)** | The complete planning workflow **without an AI model**: flights, hotels, weather, attractions and tips run in parallel, then the cost and currency conversion. **Change a requirement** afterwards and only the affected searches run again. Results can be downloaded (PDF/Excel/Word/JSON). |
+| **Plan a trip (workflow)** | The complete planning workflow **without an AI model**: flights, hotels, weather, attractions and tips run in parallel, then the cost and currency conversion. In the **Cost** tab you can price any flight and hotel option instead of the cheapest (arithmetic only, no new search). **Change a requirement** afterwards (cities, stay city, dates, travellers, rooms, stars, interests, stops, currency, budget) and only the affected searches run again. Results can be downloaded (PDF/Excel/Word/JSON). |
 | **Agent vs chatbot** | A comparison table, and a live test that sends the same question to a plain chatbot (no tools) and to the agent. |
 | **How the tools work together** | A diagram, the tool list, a worked example and a live trace of every tool call. |
 
@@ -46,6 +46,8 @@ Run the tests (all provider calls are mocked): `pip install -r requirements-dev.
 **How it works**
 * `utils/trip_state.py` - the **trip memory**. Every tool reads it; `update()` validates changes and keeps the old value when a change is invalid.
 * **Stale tracking** - each result remembers the trip fields it was searched with. Change the return date and flights, hotels and weather become stale; attractions do not. Cached results are reused, so no search is repeated needlessly.
+* **Sensible changes** - changing the destination also resets a stay city that belonged to the old destination (otherwise hotels, weather and attractions would be searched in the wrong place). Moving only the departure date past the old return date keeps the trip length and shifts the return date; an explicitly impossible return date is refused and the old dates are kept.
+* The **Change a requirement** panel always starts from the current trip, even if the chat agent changed it a moment ago, so pressing Apply never undoes that change.
 * `agents/travel_agent.py` - the agent loop (think, call tools, read results, repeat; max 8 rounds). The system prompt is rebuilt every turn with the current trip and which results are stale. Independent tools run in parallel; a trip change always runs first.
 * `agents/trip_planner.py` - the fixed workflow, built on the same tools.
 * Tools never raise: a problem comes back as `{"error": ...}` so the model can fix the input or ask the person.

@@ -7,6 +7,7 @@ Tabs:
   4. How the tools work together - diagram, tool list and the live trace of every tool call
 """
 
+import json
 import os
 import sys
 from datetime import date, timedelta
@@ -52,7 +53,8 @@ def get_ctx() -> Dict[str, Any]:
         tools = TravelTools()
         st.session_state["agent_ctx"] = {
             "tools": tools, "agent": TravelAgent(tools), "messages": [], "last_run": None,
-            "settings": {"include_tips": True, "convert_total_to": "", "food": 0.0, "activities": 0.0, "transport": 0.0},
+            "settings": {"include_tips": True, "convert_total_to": "", "food": 0.0, "activities": 0.0, "transport": 0.0,
+                         "flight_option": None, "hotel_option": None},
             "change_log": None, "compare": None, "exports": None,
         }
     return st.session_state["agent_ctx"]
@@ -198,7 +200,9 @@ def render_plan_form(ctx: Dict[str, Any]) -> None:
                 st.error(message)
             return
         ctx["settings"] = {"include_tips": include_tips, "convert_total_to": "" if convert_to == "(same)" else convert_to,
-                           "food": food, "activities": activities, "transport": transport}
+                           "food": food, "activities": activities, "transport": transport,
+                           "flight_option": None, "hotel_option": None}
+        _forget_cost_choice()
         ctx["change_log"] = None
         ctx["exports"] = None
         with st.spinner("Running the workflow: flights, hotels, weather, attractions…"):
@@ -207,10 +211,53 @@ def render_plan_form(ctx: Dict[str, Any]) -> None:
 
 def run_plan(ctx: Dict[str, Any], force: bool = False):
     s = ctx["settings"]
+    stale = ctx["tools"].stale_results()
+    if force or "flights" in stale or "hotels" in stale:  # option numbers belong to the old results
+        s["flight_option"] = s["hotel_option"] = None
+        _forget_cost_choice()
     return TripPlanner(ctx["tools"]).plan(
         include_tips=s["include_tips"], convert_total_to=s["convert_total_to"], food_per_person_per_day=s["food"],
         activities_per_person_per_day=s["activities"], local_transport_per_day=s["transport"], force=force,
+        flight_option=s.get("flight_option"), hotel_option=s.get("hotel_option"),
     )
+
+
+def _forget_cost_choice() -> None:
+    for key in ("cost_flight", "cost_hotel"):
+        st.session_state.pop(key, None)
+
+
+def recalc_cost(ctx: Dict[str, Any]) -> None:
+    """Price the flight / hotel the person picked (no new searches)."""
+    s = ctx["settings"]
+    cost = ctx["tools"].call("calculate_trip_cost", {
+        "flight_option": s["flight_option"], "hotel_option": s["hotel_option"],
+        "food_per_person_per_day": s["food"], "activities_per_person_per_day": s["activities"],
+        "local_transport_per_day": s["transport"], "convert_to": s["convert_total_to"],
+    }, source="workflow")
+    if ctx["last_run"] is not None:
+        ctx["last_run"].cost = None if "error" in cost else cost
+
+
+CURRENCIES = ["USD", "EUR", "GBP", "BDT", "INR", "JPY", "AUD", "CAD"]
+INTEREST_CHOICES = ["museums", "food", "beaches", "history", "nature", "nightlife", "shopping", "family activities"]
+STOP_LABELS = {0: "Any number of stops", 1: "Nonstop only", 2: "Max 1 stop", 3: "Max 2 stops"}
+CHANGE_KEYS = ("chg_origin", "chg_dest", "chg_stay", "chg_dep", "chg_ret", "chg_currency", "chg_adults", "chg_children",
+               "chg_rooms", "chg_ages", "chg_stars", "chg_interests", "chg_budget", "chg_stops")
+
+
+def _sync_change_widgets(ctx: Dict[str, Any]) -> None:
+    """The panel must always start from the CURRENT trip. If the trip was changed somewhere else (chat agent, plan form),
+    forget the old widget values, otherwise pressing Apply would silently undo that change."""
+    snapshot = json.dumps(ctx["tools"].state.to_dict(), sort_keys=True, default=str)
+    if ctx.get("chg_snapshot") != snapshot:
+        for key in CHANGE_KEYS:
+            st.session_state.pop(key, None)
+        ctx["chg_snapshot"] = snapshot
+
+
+def _parse_ages(text: str) -> List[int]:
+    return [int(part) for part in text.replace(";", ",").split(",") if part.strip()]
 
 
 def render_change_panel(ctx: Dict[str, Any]) -> None:
@@ -218,36 +265,75 @@ def render_change_panel(ctx: Dict[str, Any]) -> None:
     state = tools.state
     if not (state.departure_date and state.return_date):
         return
+    _sync_change_widgets(ctx)
     today = date.today()
+    cur_dep, cur_ret = date.fromisoformat(state.departure_date), date.fromisoformat(state.return_date)
+    origin_now = state.origin_city or state.origin
+    dest_now = state.destination_city or state.destination
     with st.expander("✏️ Change a requirement (only what is affected is searched again)", expanded=ctx["change_log"] is not None):
-        c1, c2, c3 = st.columns(3)
-        new_ret = c1.date_input("New return date", date.fromisoformat(state.return_date), min_value=today, key="chg_ret")
-        new_adults = int(c2.number_input("Adults", 1, 9, state.adults, key="chg_adults"))
-        new_stars = c3.multiselect("Hotel stars", ["2", "3", "4", "5"], default=[s for s in state.hotel_class.split(",") if s], key="chg_stars")
-        d1, d2, d3 = st.columns(3)
-        new_dep = d1.date_input("New departure date", date.fromisoformat(state.departure_date), min_value=today, key="chg_dep")
-        new_currency = d2.selectbox("Currency", ["USD", "EUR", "GBP", "BDT", "INR", "JPY", "AUD", "CAD"],
-                                    index=["USD", "EUR", "GBP", "BDT", "INR", "JPY", "AUD", "CAD"].index(state.currency) if state.currency in ["USD", "EUR", "GBP", "BDT", "INR", "JPY", "AUD", "CAD"] else 0,
-                                    key="chg_currency")
-        new_budget = d3.number_input("Budget", 0.0, value=float(state.budget or 0), step=100.0, key="chg_budget")
+        r1 = st.columns(3)
+        new_origin = r1[0].text_input("From (city or code)", origin_now, key="chg_origin")
+        new_dest = r1[1].text_input("To (city or code)", dest_now, key="chg_dest")
+        new_stay = r1[2].text_input("Stay in (only if not the arrival city)", state.hotel_city, key="chg_stay",
+                                    help="Leave empty to stay in the destination city.")
+        r2 = st.columns(3)
+        new_dep = r2[0].date_input("New departure date", cur_dep, min_value=min(today, cur_dep), key="chg_dep")
+        new_ret = r2[1].date_input("New return date", cur_ret, min_value=min(today, cur_ret), key="chg_ret")
+        new_currency = r2[2].selectbox("Currency", CURRENCIES, index=CURRENCIES.index(state.currency) if state.currency in CURRENCIES else 0, key="chg_currency")
+        r3 = st.columns(4)
+        new_adults = int(r3[0].number_input("Adults", 1, 9, state.adults, key="chg_adults"))
+        new_children = int(r3[1].number_input("Children", 0, 8, state.children, key="chg_children"))
+        new_rooms = int(r3[2].number_input("Rooms", 1, 8, state.rooms, key="chg_rooms"))
+        new_ages_text = r3[3].text_input("Children's ages (e.g. 4, 9)", ", ".join(map(str, state.children_ages)), key="chg_ages", disabled=new_children == 0)
+        r4 = st.columns(4)
+        new_stars = r4[0].multiselect("Hotel stars", ["2", "3", "4", "5"], default=[x for x in state.hotel_class.split(",") if x], key="chg_stars")
+        new_interests = r4[1].multiselect("Interests", sorted(set(INTEREST_CHOICES) | set(state.interests)), default=state.interests, key="chg_interests")
+        new_budget = r4[2].number_input("Budget", 0.0, value=float(state.budget or 0), step=100.0, key="chg_budget")
+        new_stops = r4[3].selectbox("Flight stops", list(STOP_LABELS), index=state.stops if state.stops in STOP_LABELS else 0,
+                                    format_func=STOP_LABELS.get, key="chg_stops")
         if st.button("Apply change and re-plan", key="chg_apply"):
-            outcome = state.update(departure_date=str(new_dep), return_date=str(new_ret), adults=new_adults,
-                                   hotel_class=",".join(new_stars), currency=new_currency, budget=new_budget)
+            changes: Dict[str, Any] = {
+                "adults": new_adults, "children": new_children, "rooms": new_rooms, "hotel_class": ",".join(new_stars),
+                "currency": new_currency, "budget": new_budget, "interests": new_interests, "stops": new_stops,
+            }
+            # Only send what the person actually edited, so untouched fields can never overwrite anything.
+            if new_origin.strip() and new_origin.strip() != origin_now:
+                changes["origin"] = new_origin.strip()
+            if new_dest.strip() and new_dest.strip() != dest_now:
+                changes["destination"] = new_dest.strip()
+            if new_stay.strip() != state.hotel_city:
+                changes["hotel_city"] = new_stay.strip()
+            if new_dep != cur_dep:
+                changes["departure_date"] = str(new_dep)
+            if new_ret != cur_ret:
+                changes["return_date"] = str(new_ret)
+            ages_error = None
+            if new_children:
+                try:
+                    changes["children_ages"] = _parse_ages(new_ages_text)
+                except ValueError:
+                    ages_error = "Children's ages must be numbers separated by commas, for example 4, 9."
+            if ages_error:
+                ctx["change_log"] = {"changed": [], "rejected": [ages_error], "notes": [], "stale": [], "ran": [], "reused": []}
+                st.rerun()
+            outcome = state.update(**changes)
             stale = tools.stale_results()
             with st.spinner("Re-running only what changed…"):
                 run = run_plan(ctx)
             ctx["last_run"] = run
             ctx["exports"] = None
             ctx["change_log"] = {"changed": describe_changes(outcome["changed"]), "rejected": list(outcome["rejected"].values()),
-                                 "stale": stale, "ran": run.ran, "reused": run.reused}
+                                 "notes": outcome["notes"], "stale": stale, "ran": run.ran, "reused": run.reused}
             st.rerun()
     log = ctx["change_log"]
     if log:
-        if log["rejected"]:
-            for message in log["rejected"]:
-                st.error(message)
+        for message in log["rejected"]:
+            st.error(message)
+        for note in log.get("notes") or []:
+            st.info(note)
         if not log["changed"]:
-            st.info("Nothing changed, so nothing was searched again.")
+            if not log["rejected"]:
+                st.info("Nothing changed, so nothing was searched again.")
         else:
             st.success("Changed: " + "; ".join(log["changed"]))
             st.markdown(
@@ -258,6 +344,29 @@ def render_change_panel(ctx: Dict[str, Any]) -> None:
 
 def _money(value: Any, currency: str) -> str:
     return fmt_money(value, currency)
+
+
+def _render_cost_choice(ctx: Dict[str, Any], report: Dict[str, Any]) -> None:
+    """Let the person price a specific flight / hotel instead of the cheapest (no new search, only arithmetic)."""
+    flights = [f for f in report["flights"] if f["price"] is not None]
+    hotels = [h for h in report["hotels"] if h["price_per_night"] is not None or h["total_price"] is not None]
+    if not (flights or hotels):
+        return
+    cur = ctx["settings"]
+    c1, c2 = st.columns(2)
+    f_opts = [None] + [f["option"] for f in flights]
+    h_opts = [None] + [h["option"] for h in hotels]
+    for key, opts in (("cost_flight", f_opts), ("cost_hotel", h_opts)):
+        if key in st.session_state and st.session_state[key] not in opts:
+            st.session_state.pop(key)
+    f_label = {f["option"]: f"#{f['option']} {f['airline'] or 'flight'} · {_money(f['price'], ctx['tools'].state.currency)}" for f in flights}
+    h_label = {h["option"]: f"#{h['option']} {h['name']} · " + (_money(h["price_per_night"], ctx["tools"].state.currency) + "/night" if h["price_per_night"] is not None else "total only") for h in hotels}
+    pick_f = c1.selectbox("Flight to price", f_opts, key="cost_flight", format_func=lambda o: "Cheapest flight" if o is None else f_label[o], index=f_opts.index(cur["flight_option"]) if cur["flight_option"] in f_opts else 0) if flights else None
+    pick_h = c2.selectbox("Hotel to price", h_opts, key="cost_hotel", format_func=lambda o: "Cheapest hotel" if o is None else h_label[o], index=h_opts.index(cur["hotel_option"]) if cur["hotel_option"] in h_opts else 0) if hotels else None
+    if (pick_f, pick_h) != (cur["flight_option"], cur["hotel_option"]):
+        cur["flight_option"], cur["hotel_option"] = pick_f, pick_h
+        recalc_cost(ctx)
+        st.rerun()
 
 
 def render_results(ctx: Dict[str, Any]) -> None:
@@ -284,6 +393,7 @@ def render_results(ctx: Dict[str, Any]) -> None:
         if not cost:
             st.info("No cost yet - a flight or hotel search is needed first.")
         else:
+            _render_cost_choice(ctx, report)
             m1, m2, m3 = st.columns(3)
             m1.metric("Estimated total", _money(cost["total"], currency))
             m2.metric("Per traveller", _money(cost["per_person"], currency))

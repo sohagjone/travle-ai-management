@@ -450,3 +450,92 @@ def test_agent_page_compare_tab_runs_both(net, monkeypatch):
         assert "tools" not in llm.calls[0] and "tools" in llm.calls[1]      # the ONLY difference: the agent is offered tools
     finally:
         patcher.stop()
+
+
+# ------------------------------------------------- updates when requirements change
+def test_destination_change_resets_the_old_stay_city():
+    s = TripState()
+    s.update(today=TODAY, origin="Madrid", destination="Amsterdam", hotel_city="Zandvoort", departure_date=str(D1), return_date=str(D2))
+    assert s.stay_city == "Zandvoort"
+    outcome = s.update(today=TODAY, destination="Rome")
+    assert s.hotel_city == "" and s.stay_city == "Rome"
+    assert any("stay city" in n for n in outcome["notes"]) and "hotel_city" in outcome["changed"]
+    # a stay city given together with the new destination is kept
+    s.update(today=TODAY, destination="Paris", hotel_city="Versailles")
+    assert s.stay_city == "Versailles"
+    # an unchanged destination never touches the stay city
+    s.update(today=TODAY, destination="Paris")
+    assert s.stay_city == "Versailles"
+
+
+def test_moving_only_the_departure_keeps_the_trip_length():
+    s = TripState()
+    s.update(today=TODAY, origin="MAD", destination="AMS", departure_date=str(D1), return_date=str(D2))
+    later = D2 + timedelta(days=10)
+    outcome = s.update(today=TODAY, departure_date=str(later))
+    assert s.departure_date == str(later) and s.return_date == str(later + timedelta(days=7)) and not outcome["rejected"]
+    assert any("7 nights" in n for n in outcome["notes"])
+    # an explicit but impossible return date is still refused and nothing changes
+    before = (s.departure_date, s.return_date)
+    outcome = s.update(today=TODAY, return_date=str(D1))
+    assert (s.departure_date, s.return_date) == before and "return_date" in outcome["rejected"]
+
+
+def test_new_destination_searches_hotels_weather_and_attractions_in_the_new_city(net):
+    t = ready_tools()
+    planner = TripPlanner(t)
+    planner.plan()
+    t.state.update(destination="Rome")
+    run = planner.plan()
+    assert sorted(run.ran) == ["attractions", "flights", "hotels", "tips", "weather"] and not run.reused
+    assert t.state.stay_city == "Rome"
+
+
+def test_workflow_can_price_a_chosen_flight_and_hotel(net):
+    t = ready_tools()
+    run = TripPlanner(t).plan(include_tips=False, flight_option=1, hotel_option=3)
+    labels = [i["label"] for i in run.cost["items"]]
+    assert any("option 1, chosen" in x for x in labels) and any("option 3, chosen" in x for x in labels)
+    assert run.cost["total"] == 412 + 150 * 7 and run.cost["complete"]
+    assert run.reused == [] and net.serp.count("google_flights") == 1   # picking an option never searches again
+
+
+def test_change_panel_covers_destination_and_starts_from_the_current_trip(net):
+    from streamlit.testing.v1 import AppTest
+    from utils.validation import airport_label
+    at = AppTest.from_file(MAIN_PAGE, default_timeout=60).run()
+    at.selectbox(key="ag_origin").select(airport_label("MAD"))
+    at.selectbox(key="ag_destination").select(airport_label("AMS"))
+    at.button(key="ag_plan").click().run()
+    ctx = at.session_state["agent_ctx"]
+    assert at.text_input(key="chg_dest").value == ctx["tools"].state.destination_city
+
+    # the trip changes somewhere else (as the chat agent would do) - the panel must show it, not the old values
+    ctx["tools"].call("update_trip_details", {"adults": 3})
+    at.run()
+    assert at.number_input(key="chg_adults").value == 3
+
+    before = len(net.serp)
+    at.text_input(key="chg_dest").set_value("Rome")
+    at.button(key="chg_apply").click().run()
+    assert not at.exception
+    ctx = at.session_state["agent_ctx"]
+    assert ctx["tools"].state.stay_city == "Rome" and ctx["tools"].state.adults == 3        # adults were not reverted
+    assert sorted(ctx["change_log"]["ran"]) == ["attractions", "flights", "hotels", "tips", "weather"]
+    assert net.serp[before:].count("google_maps") >= 1
+
+
+def test_cost_tab_prices_the_chosen_flight_without_searching_again(net):
+    from streamlit.testing.v1 import AppTest
+    from utils.validation import airport_label
+    at = AppTest.from_file(MAIN_PAGE, default_timeout=60).run()
+    at.selectbox(key="ag_origin").select(airport_label("MAD"))
+    at.selectbox(key="ag_destination").select(airport_label("AMS"))
+    at.button(key="ag_plan").click().run()
+    cheapest = at.session_state["agent_ctx"]["last_run"].cost["total"]
+    searches = len(net.serp)
+    at.selectbox(key="cost_flight").select(1).run()           # Iberia, 412 instead of 355
+    assert not at.exception
+    ctx = at.session_state["agent_ctx"]
+    assert ctx["settings"]["flight_option"] == 1 and ctx["last_run"].cost["total"] == cheapest + (412 - 355)
+    assert len(net.serp) == searches

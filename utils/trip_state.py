@@ -34,6 +34,7 @@ _FIELD_LABELS = {
     "return_date": "Return", "adults": "Adults", "children": "Children", "children_ages": "Children's ages",
     "rooms": "Rooms", "currency": "Currency", "budget": "Budget", "hotel_class": "Hotel stars",
     "interests": "Interests", "stops": "Stops",
+    "origin_city": "From city", "destination_city": "To city", "hotel_city": "Stay city",
 }
 
 
@@ -171,7 +172,13 @@ class TripState:
                 notes.append(f"{airport['city']} has several airports; using {airport['code']}. Others: {others}.")
         if self.origin and self.origin == self.destination:
             notes.append("Origin and destination are the same airport - please check them.")
+        if "destination" in changed and self.hotel_city and changes.get("hotel_city") is None:
+            # The old stay city belonged to the old destination; keeping it would search hotels, weather and
+            # attractions in the wrong place.
+            notes.append(f"Destination changed, so the stay city '{self.hotel_city}' was reset to {self.destination_city}.")
+            put("hotel_city", "")
 
+        old_dep, old_ret = self.departure_date, self.return_date
         for name in ("departure_date", "return_date"):
             if changes.get(name) in (None, ""):
                 continue
@@ -188,6 +195,17 @@ class TripState:
                 rejected[name] = "Departure date cannot be in the past."
                 continue
             put(name, raw)
+        if ("departure_date" in changed and "return_date" not in changed and not changes.get("return_date")
+                and old_dep and old_ret and self.departure_date >= self.return_date):
+            # "Leave a week later" with no new return date: keep the length of the trip instead of failing.
+            try:
+                length = date.fromisoformat(old_ret) - date.fromisoformat(old_dep)
+                if length.days > 0:
+                    shifted = (date.fromisoformat(self.departure_date) + length).isoformat()
+                    put("return_date", shifted)
+                    notes.append(f"Return date moved to {shifted} to keep the trip at {length.days} nights.")
+            except ValueError:
+                pass
         if self.departure_date and self.return_date and self.return_date <= self.departure_date:
             # Keep the previous dates: a return before departure would break every search.
             for name in ("departure_date", "return_date"):

@@ -46,6 +46,8 @@ class TripPlanner:
         activities_per_person_per_day: float = 0,
         local_transport_per_day: float = 0,
         force: bool = False,
+        flight_option: Optional[int] = None,
+        hotel_option: Optional[int] = None,
     ) -> PlanRun:
         started = time.time()
         run = PlanRun()
@@ -81,6 +83,8 @@ class TripPlanner:
                 "activities_per_person_per_day": activities_per_person_per_day,
                 "local_transport_per_day": local_transport_per_day,
                 "convert_to": convert_total_to,
+                "flight_option": flight_option,
+                "hotel_option": hotel_option,
             }, source="workflow")
             run.cost = None if "error" in cost else cost
             if "error" in cost:
