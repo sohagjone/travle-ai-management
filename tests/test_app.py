@@ -226,8 +226,9 @@ def test_ui_total_failure_shows_error_no_buttons(monkeypatch):
 def test_airport_dropdown_labels():
     from utils.validation import airport_choices, code_from_label
     labels, mapping = airport_choices()
-    assert "DAC-Hazrat Shahjalal International Airport" in labels and len(labels) > 5000
-    assert code_from_label("DAC-Hazrat Shahjalal International Airport") == "DAC" and code_from_label(None) == ""
+    label = "DAC-Hazrat Shahjalal International Airport, Bangladesh"   # labels end with the country
+    assert label in labels and len(labels) > 5000
+    assert code_from_label(label) == "DAC" and code_from_label(None) == ""
 
 
 def test_ui_requires_airports_and_shows_cards(monkeypatch):
