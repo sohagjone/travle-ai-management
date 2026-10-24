@@ -159,3 +159,11 @@ def code_from_label(label: Optional[str]) -> str:
     if not label:
         return ""
     return airport_choices()[1].get(label, "")
+
+
+def airports_by_city(city: str) -> List[str]:
+    """IATA codes of airports whose city matches the text (case-insensitive, exact)."""
+    wanted = (city or "").strip().lower()
+    if not wanted:
+        return []
+    return sorted(code for code, info in _AIRPORTS.items() if (info.get("city") or "").lower() == wanted)

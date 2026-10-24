@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from .config import redact
-from .report_data import FLIGHT_COLUMNS, HOTEL_COLUMNS, Column, clean_text, file_stem
+from .report_data import ATTRACTION_COLUMNS, FLIGHT_COLUMNS, HOTEL_COLUMNS, Column, clean_text, file_stem
 
 log = logging.getLogger("travel_app")
 
@@ -73,6 +73,10 @@ def build_hotels_csv(report: Dict[str, Any]) -> bytes:
     return _build_csv(HOTEL_COLUMNS, report["hotels"])
 
 
+def build_attractions_csv(report: Dict[str, Any]) -> bytes:
+    return _build_csv(ATTRACTION_COLUMNS, report.get("attractions", []))
+
+
 def build_json(report: Dict[str, Any]) -> bytes:
     """Structured export. The email address and any secrets are never in `report`."""
     flights = [{k: v for k, v in row.items() if k != "top_pick"} | {"google_top_pick": row.get("top_pick") == "Yes"} for row in report["flights"]]
@@ -83,6 +87,10 @@ def build_json(report: Dict[str, Any]) -> bytes:
         "search_request": report["request"],
         "flights": flights,
         "hotels": hotels,
+        "attractions": [{k: v for k, v in a.items() if k != "thumbnail"} for a in report.get("attractions", [])],
+        "weather": report.get("weather", {}),
+        "trip_plan": [{**d, "attractions": [a["name"] for a in d["attractions"]]} for d in report.get("plan", [])],
+        "trip_budget": report.get("budget"),
         "recommendations": report["recommendations"],
         "cost_estimate": report["cost_estimate"],
         "sources": report["sources"],
@@ -120,6 +128,7 @@ def build_all_exports(report: Dict[str, Any]) -> Dict[str, ExportFile]:
     exports["xlsx"] = _safe_build("xlsx", "Excel workbook", f"{stem}.xlsx", xlsx)
     exports["flights_csv"] = _safe_build("flights_csv", "Flights CSV", f"{stem}_flights.csv", lambda: build_flights_csv(report))
     exports["hotels_csv"] = _safe_build("hotels_csv", "Hotels CSV", f"{stem}_hotels.csv", lambda: build_hotels_csv(report))
+    exports["attractions_csv"] = _safe_build("attractions_csv", "Attractions CSV", f"{stem}_attractions.csv", lambda: build_attractions_csv(report))
     exports["json"] = _safe_build("json", "JSON data", f"{stem}.json", lambda: build_json(report))
     exports["docx"] = _safe_build("docx", "Word report", f"{stem}.docx", docx)
     return exports

@@ -21,6 +21,13 @@ from utils.display import (
     filter_hotels, flight_highlights, fmt_date, fmt_time, hotel_highlights, md_link, stops_text,
 )
 from utils.styles import CSS, FEATURE_CHIPS, HERO
+from utils.trip_cost import Assumptions
+from views.assistant import render_assistant
+from views.attractions import render_attractions
+from views.common import badges as _badges, md_safe as _md_safe, snapshot
+from views.cost import render_cost
+from views.plan import render_plan
+from views.weather import render_weather
 from utils.export_reports import build_all_exports
 from utils.report_data import (
     FLIGHT_COLUMNS,
@@ -32,6 +39,7 @@ from utils.report_data import (
 from utils.validation import (
     airport_choices,
     airport_info,
+    airport_label,
     city_for_airport,
     code_from_label,
     is_valid_email,
@@ -53,11 +61,6 @@ async def process_travel_request(travel_request: Dict[str, Any]) -> Dict[str, An
         raise ValueError("Return date must be later than the departure date.")
     orchestrator = OrchestratorAgent()
     return await orchestrator.run([{"role": "user", "content": json.dumps(travel_request)}])
-
-
-def _md_safe(text: Any) -> str:
-    """Escape Markdown (and `$`, which Streamlit would treat as LaTeX) in provider text."""
-    return re.sub(r"([\\`*_{}\[\]()#+\-.!|<>$~])", r"\\\1", "" if text is None else str(text))
 
 
 def _download_button(label: str, data: bytes, file_name: str, mime: str, key: str) -> None:
@@ -157,7 +160,15 @@ def render_form() -> Optional[Dict[str, Any]]:
     }
 
 
-def run_search(form: Dict[str, Any]) -> None:
+def make_report(raw: Dict[str, Any], budget: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build the one report that the screen and every download use."""
+    return build_report(
+        raw["travel_request"], raw["flights"], raw["hotels"], raw["recommendations"], raw["errors"],
+        attractions_result=raw["attractions"], weather_result=raw["weather"], budget=budget,
+    )
+
+
+def run_search(form: Dict[str, Any], previous: Optional[Dict[str, Any]] = None) -> None:
     errors = validate_travel_request(
         form["origin"], form["destination"], form["departure_date"], form["return_date"],
         form["adults"], form["children"], form["rooms"], form["children_ages"],
@@ -170,11 +181,14 @@ def run_search(form: Dict[str, Any]) -> None:
     # A new search must never be mixed with the previous one.
     st.session_state.pop("search", None)
 
+    dest = airport_info(form["destination"]) or {}
     travel_request = {
         "origin": form["origin"],
         "destination": form["destination"],
         "origin_city": city_for_airport(form["origin"]),
         "destination_city": city_for_airport(form["destination"]),
+        "destination_lat": dest.get("lat"),
+        "destination_lon": dest.get("lon"),
         "departure_date": str(form["departure_date"]),
         "return_date": str(form["return_date"]),
         "adults": form["adults"],
@@ -186,8 +200,11 @@ def run_search(form: Dict[str, Any]) -> None:
         "currency": "USD",
     }
     try:
-        with st.spinner("Searching flights and hotels... this can take up to a minute."):
+        with st.status("Planning your trip...", expanded=True) as status:
+            st.write("Searching flights, hotels, attractions and weather at the same time...")
             results = asyncio.run(process_travel_request(travel_request))
+            st.write("Building recommendations, day plan and download files...")
+            status.update(label="Trip planned", state="complete", expanded=False)
     except ValueError as exc:
         st.error(redact(exc))
         return
@@ -195,18 +212,62 @@ def run_search(form: Dict[str, Any]) -> None:
         st.error(f"The search failed: {redact(exc)}")
         return
 
-    report = build_report(
-        travel_request, results.get("flights"), results.get("hotels"),
-        results.get("final_recommendations"), results.get("errors"),
-    )
+    raw = {
+        "travel_request": travel_request, "flights": results.get("flights"), "hotels": results.get("hotels"),
+        "recommendations": results.get("final_recommendations"), "errors": results.get("errors"),
+        "attractions": results.get("attractions"), "weather": results.get("weather"),
+    }
+    report = make_report(raw)
     # Build every download once, right now; button clicks later just serve these bytes.
     st.session_state["search"] = {
         "id": uuid.uuid4().hex,
+        "raw": raw,
         "report": report,
         "exports": build_all_exports(report),
         "signature": _form_signature({k: v for k, v in form.items() if k != "submit"}),
         "email_result": None,
+        "budget": None,
+        "assumptions": None,
+        "chat": [],
+        "pending": None,
+        "changes_from": previous,
     }
+
+
+def set_budget(search: Dict[str, Any], budget: Optional[Dict[str, Any]], assumptions: Optional[Assumptions]) -> None:
+    """Store the user's budget and rebuild the report and downloads so they include it."""
+    search["budget"], search["assumptions"] = budget, assumptions
+    search["report"] = make_report(search["raw"], budget)
+    search["exports"] = build_all_exports(search["report"])
+
+
+def apply_trip_changes(changes: Dict[str, Any]) -> None:
+    """Callback for 'Apply and update trip': put the changes into the form, then search again."""
+    search = st.session_state.get("search")
+    if not search:
+        return
+    today = date.today()
+    for key in ("departure_date", "return_date"):
+        if key in changes and date.fromisoformat(changes[key]) < today:
+            search["pending"] = None
+            st.session_state["_apply_error"] = "That date is in the past, so the trip was not changed."
+            return
+    st.session_state["_prev_snapshot"] = snapshot(search["report"])
+    if "origin" in changes:
+        st.session_state["origin"] = airport_label(changes["origin"])
+    if "destination" in changes:
+        st.session_state["destination"] = airport_label(changes["destination"])
+    if "departure_date" in changes:
+        st.session_state["dep_date"] = date.fromisoformat(changes["departure_date"])
+    if "return_date" in changes:
+        st.session_state["ret_date"] = date.fromisoformat(changes["return_date"])
+    for key, widget in (("adults", "adults"), ("children", "children"), ("rooms", "rooms")):
+        if key in changes:
+            st.session_state[widget] = int(changes[key])
+    for i, age in enumerate(changes.get("children_ages", [])):
+        st.session_state[f"child_age_{i}"] = int(age)
+    search["pending"] = None
+    st.session_state["_auto_search"] = True
 
 
 def render_summary(report: Dict[str, Any], form_changed: bool) -> None:
@@ -239,19 +300,17 @@ def render_exports(search: Dict[str, Any]) -> None:
         order.append("flights_csv")
     if report["hotels"]:
         order.append("hotels_csv")
+    if report.get("attractions"):
+        order.append("attractions_csv")
     order.append("json")
-    cols = st.columns(3)
+    cols = st.columns(4)
     for i, key in enumerate(order):
         export = exports[key]
-        with cols[i % 3]:
+        with cols[i % 4]:
             if export.ok:
                 _download_button(f"⬇ {export.label}", export.data, export.filename, export.mime, key=f"dl_{search['id']}_{key}")
             else:
                 st.error(export.error or f"{export.label} could not be created.")
-
-
-def _badges(*pairs) -> str:
-    return " ".join(f":{color}-badge[{text}]" for color, text in pairs if text)
 
 
 def _sorted(rows, sorts, label, key):
@@ -572,8 +631,13 @@ def main():
     st.markdown(FEATURE_CHIPS, unsafe_allow_html=True)
     if not get_secret("SERPAPI_API_KEY"):
         st.warning("SERPAPI_API_KEY is not configured, so searches will fail until it is added (see README).")
-    if form["submit"]:
-        run_search(form)
+    if st.session_state.get("_apply_error"):
+        st.error(st.session_state.pop("_apply_error"))
+
+    auto = st.session_state.pop("_auto_search", False)
+    previous = st.session_state.pop("_prev_snapshot", None)
+    if form["submit"] or auto:
+        run_search(form, previous if auto else None)
 
     search = st.session_state.get("search")
     if not search:
@@ -583,13 +647,23 @@ def main():
     st.divider()
     render_summary(report, form_changed=current_signature != search["signature"])
     render_exports(search)
-    tab_flights, tab_hotels, tab_recs = st.tabs(["✈️ Flights", "🏨 Hotels", "🤖 AI Recommendations"])
-    with tab_flights:
+    tabs = st.tabs(["📋 Trip Plan", "✈️ Flights", "🏨 Hotels", "🎯 Attractions", "🌤 Weather", "💰 Trip Cost", "🤖 Recommendations", "💬 Assistant"])
+    with tabs[0]:
+        render_plan(report, search)
+    with tabs[1]:
         render_flights(report)
-    with tab_hotels:
+    with tabs[2]:
         render_hotels(report)
-    with tab_recs:
+    with tabs[3]:
+        render_attractions(report, search["id"])
+    with tabs[4]:
+        render_weather(report, search["id"])
+    with tabs[5]:
+        render_cost(report, search, lambda budget, assumptions: set_budget(search, budget, assumptions))
+    with tabs[6]:
         render_recommendations(report)
+    with tabs[7]:
+        render_assistant(report, search, apply_trip_changes)
     render_email(search)
 
 

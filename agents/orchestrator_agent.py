@@ -6,6 +6,9 @@ from .base_agent import BaseAgent, LLMUnavailableError
 from .flight_agent import FlightAgent
 from .hotel_agent import HotelAgent
 from .email_agent import EmailAgent
+from .attractions_agent import AttractionsAgent
+from .weather_agent import WeatherAgent
+from .currency_agent import CurrencyAgent
 from utils.config import DEFAULT_CURRENCY, logger, redact
 from utils.recommendations import (
     build_llm_prompt,
@@ -35,6 +38,9 @@ class OrchestratorAgent(BaseAgent):
         self.flight_agent = FlightAgent()
         self.hotel_agent = HotelAgent()
         self.email_agent = EmailAgent()
+        self.attractions_agent = AttractionsAgent()
+        self.weather_agent = WeatherAgent()
+        self.currency_agent = CurrencyAgent()
 
     async def run(self, messages: list) -> Dict[str, Any]:
         """Process a travel planning request.
@@ -74,23 +80,42 @@ class OrchestratorAgent(BaseAgent):
             "currency": currency,
         }
 
-        flights_outcome, hotels_outcome = await asyncio.gather(
+        attractions_payload = {
+            "city": travel_request.get("destination_city") or travel_request.get("city") or "",
+            "lat": travel_request.get("destination_lat"),
+            "lon": travel_request.get("destination_lon"),
+        }
+        weather_payload = {
+            "lat": travel_request.get("destination_lat"),
+            "lon": travel_request.get("destination_lon"),
+            "start_date": travel_request["departure_date"],
+            "end_date": travel_request["return_date"],
+        }
+        # The whole workflow runs at once: flights, hotels, attractions and weather.
+        flights_outcome, hotels_outcome, attractions_outcome, weather_outcome = await asyncio.gather(
             self._safe(self.flight_agent.run, flight_payload, "Flights"),
             self._safe(self.hotel_agent.run, hotel_payload, "Hotels"),
+            self._safe(self.attractions_agent.run, attractions_payload, "Attractions"),
+            self._safe(self.weather_agent.run, weather_payload, "Weather"),
         )
         flights, flight_error = flights_outcome
         hotels, hotel_error = hotels_outcome
-        errors = [e for e in (flight_error, hotel_error) if e]
+        attractions, attractions_error = attractions_outcome
+        weather, weather_error = weather_outcome
+        errors = [e for e in (flight_error, hotel_error, attractions_error, weather_error) if e]
+        core_errors = [e for e in (flight_error, hotel_error) if e]
 
         workflow_context: Dict[str, Any] = {
             "travel_request": travel_request,
             "flights": flights,
             "hotels": hotels,
+            "attractions": attractions,
+            "weather": weather,
             "errors": errors,
             "status": "failed" if flights is None and hotels is None else ("partial" if errors else "completed"),
         }
         if flights is None and hotels is None:
-            raise RuntimeError("; ".join(errors) or "The search failed.")
+            raise RuntimeError("; ".join(core_errors) or "The search failed.")
 
         workflow_context["final_recommendations"] = await asyncio.to_thread(
             self._make_recommendations, flights, hotels

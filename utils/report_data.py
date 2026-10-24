@@ -62,6 +62,27 @@ HOTEL_COLUMNS = [
     Column("booking_url", "Booking / website link", "url", 34),
 ]
 
+ATTRACTION_COLUMNS = [
+    Column("option", "Option", "int", 8),
+    Column("name", "Attraction", "text", 34),
+    Column("type", "Type", "text", 22),
+    Column("rating", "Rating", "float", 9),
+    Column("reviews", "Reviews", "int", 10),
+    Column("address", "Address", "text", 40),
+    Column("description", "Description", "text", 40),
+    Column("map_url", "Google Maps link", "url", 30),
+]
+
+WEATHER_COLUMNS = [
+    Column("date", "Date", "text", 12),
+    Column("mode_label", "Basis", "text", 20),
+    Column("summary", "Conditions", "text", 22),
+    Column("tmax", "High (°C)", "float", 11),
+    Column("tmin", "Low (°C)", "float", 11),
+    Column("precip", "Rain (mm)", "float", 11),
+    Column("rain_chance", "Rain chance (%)", "int", 15),
+]
+
 
 # ----------------------------------------------------------------- helpers
 def safe_http_url(url: Any) -> Optional[str]:
@@ -167,6 +188,29 @@ def _hotel_rows(hotels_result: Optional[Dict[str, Any]], currency: str) -> List[
     return rows
 
 
+def _attraction_rows(result: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = []
+    for i, a in enumerate((result or {}).get("attractions") or [], start=1):
+        rows.append(
+            {
+                "option": i, "name": a.get("name"), "type": a.get("type"), "rating": a.get("rating"),
+                "reviews": a.get("reviews") if isinstance(a.get("reviews"), int) else None,
+                "address": a.get("address"), "description": a.get("description"),
+                "map_url": safe_http_url(a.get("map_url")), "thumbnail": safe_http_url(a.get("thumbnail")),
+                "lat": a.get("lat"), "lon": a.get("lon"),
+            }
+        )
+    return rows
+
+
+def _weather_rows(result: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = []
+    for d in (result or {}).get("days") or []:
+        typical = d.get("mode") == "typical"
+        rows.append({**d, "mode_label": f"Typical (avg of last {d.get('years_used', 3)} years)" if typical else "Forecast"})
+    return rows
+
+
 def estimate_cost(
     flight: Optional[Dict[str, Any]],
     hotel: Optional[Dict[str, Any]],
@@ -223,6 +267,9 @@ def build_report(
     recommendations: Optional[Dict[str, Any]] = None,
     errors: Optional[List[str]] = None,
     generated_at: Optional[datetime] = None,
+    attractions_result: Optional[Dict[str, Any]] = None,
+    weather_result: Optional[Dict[str, Any]] = None,
+    budget: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create the single report dict that every exporter uses."""
     now = generated_at or datetime.now(timezone.utc)
@@ -288,6 +335,21 @@ def build_report(
     ]
     if recs.get("source") == "rule_based":
         notes.append("No AI model was used: recommendations are simple rules applied to the returned data (lowest flight price, best-rated hotel).")
+    attractions = _attraction_rows(attractions_result)
+    weather_rows = _weather_rows(weather_result)
+    if attractions_result:
+        sources.append({"name": attractions_result.get("source", "Attractions provider"), "type": "Attractions", "retrieved": attractions_result.get("search_timestamp"), "link": None})
+        notes.append("Attractions are Google Maps search results for the destination city; opening hours, ticket prices and distances are not checked.")
+    if weather_result:
+        sources.append({"name": weather_result.get("source", "Weather provider"), "type": "Weather", "retrieved": weather_result.get("search_timestamp"), "link": None})
+        if weather_result.get("has_typical"):
+            notes.append("Weather for dates more than about 15 days away shows typical conditions (average of the same dates in recent years), not a forecast.")
+    if budget and budget.get("converted"):
+        conv = budget["converted"]
+        sources.append({"name": conv.get("source") or "Exchange-rate provider", "type": "Currency rates", "retrieved": conv.get("updated"), "link": None})
+        notes.append("Converted amounts use indicative exchange rates, not bank or card rates.")
+    if budget and any(i["origin"] == "you" for i in budget.get("items", [])):
+        notes.append("Budget lines marked 'Your estimate' were typed in by the user; they are not provider data.")
     if not flights:
         notes.append("No flight options were returned for this search.")
     if not hotels:
@@ -295,7 +357,7 @@ def build_report(
     for message in errors or []:
         notes.append("Problem during search: " + message)
 
-    return {
+    report_core = {
         "schema_version": SCHEMA_VERSION,
         "title": "Travel Search Report",
         "generated_at": now.isoformat(timespec="seconds"),
@@ -309,7 +371,15 @@ def build_report(
         "sources": sources,
         "notes": notes,
         "errors": list(errors or []),
+        "attractions": attractions,
+        "weather": {"days": weather_rows, "has_typical": bool((weather_result or {}).get("has_typical")),
+                    "has_forecast": bool((weather_result or {}).get("has_forecast"))} if weather_rows else {},
+        "budget": budget,
     }
+    from .trip_plan import build_trip_plan  # local import avoids a circular import
+
+    report_core["plan"] = build_trip_plan(report_core)
+    return report_core
 
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")

@@ -30,6 +30,7 @@ from reportlab.platypus import (
 )
 
 from .report_data import (
+    ATTRACTION_COLUMNS,
     FLIGHT_COLUMNS,
     HOTEL_COLUMNS,
     clean_text,
@@ -216,6 +217,22 @@ def build_pdf(report: Dict[str, Any]) -> bytes:
     excluded = "; ".join(report["cost_estimate"]["excluded"])
     story.append(Paragraph(_text("Not included: " + excluded + "."), st["small"]))
 
+    # ---- Trip budget (only when the user entered a budget)
+    budget = report.get("budget")
+    if budget and budget.get("items"):
+        story.append(Paragraph("Trip budget", st["h2"]))
+        data = [[Paragraph("Category", st["head"]), Paragraph("Item", st["head"]), Paragraph("Source", st["head"]), Paragraph(f"Amount ({_text(currency)})", st["head"])]]
+        for item in budget["items"]:
+            data.append([Paragraph(_text(item["category"]), st["cell"]), Paragraph(_text(item["label"]), st["cell"]), Paragraph(_text(item["basis"]), st["cell"]), Paragraph(_text(fmt_money(item["amount"], currency)), st["cell"])])
+        total_label = "Total" + ("" if budget.get("complete") else " (INCOMPLETE: flight or hotel price missing)")
+        data.append([Paragraph(f"<b>{_text(total_label)}</b>", st["cell"]), "", "", Paragraph(f"<b>{_text(fmt_money(budget['total'], currency))}</b>", st["cell"])])
+        story.append(_table(data, [3.0 * cm, 6.0 * cm, usable_width - 12.5 * cm, 3.5 * cm]))
+        if budget.get("per_person") is not None:
+            story.append(Paragraph(_text(f"About {fmt_money(budget['per_person'], currency)} per traveller ({budget.get('travellers')} traveller(s))."), st["small"]))
+        conv = budget.get("converted")
+        if conv:
+            story.append(Paragraph(_text(f"Converted total: {fmt_money(conv['total'], conv['currency'])} (1 {currency} = {conv['rate']:.4f} {conv['currency']}; indicative rate, updated {conv.get('updated') or 'n/a'})."), st["base"]))
+
     # ---- Flights
     story.append(Paragraph(f"Flight options ({len(report['flights'])})", st["h2"]))
     if not report["flights"]:
@@ -247,6 +264,56 @@ def build_pdf(report: Dict[str, Any]) -> bytes:
         fixed = sum(widths) * cm
         remaining = usable_width - fixed - 1.4 * cm
         story.append(_table(data, [w * cm for w in widths] + [remaining, 1.4 * cm]))
+
+    # ---- Day-by-day plan
+    if report.get("plan"):
+        story.append(Paragraph("Suggested day-by-day plan", st["h2"]))
+        story.append(Paragraph("Built from the returned attractions and weather. Places are grouped by proximity; opening hours are not checked.", st["small"]))
+        story.append(Spacer(1, 3))
+        for day in report["plan"]:
+            w = day.get("weather")
+            wtxt = ""
+            if w:
+                hi = "n/a" if w.get("tmax") is None else f"{w['tmax']:.0f}"
+                lo = "n/a" if w.get("tmin") is None else f"{w['tmin']:.0f}"
+                wtxt = f" - {w.get('summary')}, {lo} to {hi} °C" + (" (typical)" if w.get("mode") == "typical" else "")
+            lines = [Paragraph(f"<b>{_text(day['label'])}</b> - {_text(day['date'])}{_text(wtxt)}", st["base"])]
+            for a in day["attractions"]:
+                rating = f" ({a['rating']:.1f})" if a.get("rating") is not None else ""
+                lines.append(Paragraph(_text(f"{a['name']}{rating}"), st["bullet"], bulletText="-"))
+            if not day["attractions"]:
+                lines.append(Paragraph("Free time / travel.", st["bullet"], bulletText="-"))
+            story.append(KeepTogether(lines + [Spacer(1, 4)]))
+
+    # ---- Attractions
+    story.append(Paragraph(f"Tourist attractions ({len(report.get('attractions', []))})", st["h2"]))
+    if not report.get("attractions"):
+        story.append(Paragraph("No attractions were returned for this destination.", st["base"]))
+    else:
+        keys = ["option", "name", "type", "rating", "reviews"]
+        cols = [c for c in ATTRACTION_COLUMNS if c.key in keys]
+        widths = [1.3, 5.2, 3.2, 1.4, 1.7]
+        data = [[Paragraph(_text(c.header), st["head"]) for c in cols] + [Paragraph("Map", st["head"])]]
+        for row in report["attractions"]:
+            data.append([Paragraph(_text(display_value(row, c)), st["cell"]) for c in cols] + [Paragraph(_link(row.get("map_url"), "Open"), st["cell"])])
+        remaining = usable_width - sum(widths) * cm
+        story.append(_table(data, [w * cm for w in widths] + [remaining]))
+
+    # ---- Weather
+    weather_days = (report.get("weather") or {}).get("days") or []
+    story.append(Paragraph("Weather", st["h2"]))
+    if not weather_days:
+        story.append(Paragraph("No weather data was available for these dates.", st["base"]))
+    else:
+        data = [[Paragraph(h, st["head"]) for h in ("Date", "Basis", "Conditions", "High / Low (°C)", "Rain")]]
+        for d in weather_days:
+            hi = "n/a" if d.get("tmax") is None else f"{d['tmax']:.0f}"
+            lo = "n/a" if d.get("tmin") is None else f"{d['tmin']:.0f}"
+            rain = f"{d['rain_chance']}% chance" if d.get("rain_chance") is not None else ("n/a" if d.get("precip") is None else f"{d['precip']:.1f} mm")
+            data.append([Paragraph(_text(c), st["cell"]) for c in (d["date"], d.get("mode_label", ""), d.get("summary", ""), f"{hi} / {lo}", rain)])
+        story.append(_table(data, [2.4 * cm, 5.0 * cm, 4.0 * cm, 3.0 * cm, usable_width - 14.4 * cm]))
+        if report["weather"].get("has_typical"):
+            story.append(Paragraph("'Typical' rows are averages of the same dates in recent years, not a forecast.", st["small"]))
 
     # ---- Sources & notes
     story.append(Paragraph("Data sources", st["h2"]))

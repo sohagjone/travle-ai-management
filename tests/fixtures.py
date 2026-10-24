@@ -71,3 +71,30 @@ HOTELS_RAW = {
         },
     ]
 }
+
+
+# ---- attractions (SerpAPI google_maps shape) and weather (Open-Meteo shape): MOCKED
+ATTRACTIONS_RAW = {
+    "local_results": [
+        {"title": "Rijksmuseum", "place_id": "ChIJ1", "rating": 4.8, "reviews": 120000, "type": "Art museum",
+         "address": "Museumstraat 1, Amsterdam", "thumbnail": "https://encrypted-tbn0.gstatic.com/r.jpg",
+         "gps_coordinates": {"latitude": 52.36, "longitude": 4.885}},
+        {"title": "Van Gogh Museum", "place_id": "ChIJ2", "rating": 4.7, "reviews": 90000, "types": ["Museum"],
+         "gps_coordinates": {"latitude": 52.358, "longitude": 4.881}},
+        {"title": "Vondelpark", "rating": 4.6, "reviews": 80000, "type": "Park",
+         "gps_coordinates": {"latitude": 52.358, "longitude": 4.868}},
+        {"title": "Anne Frank House", "place_id": "ChIJ4", "rating": 4.5, "reviews": 60000, "type": "Museum",
+         "gps_coordinates": {"latitude": 52.375, "longitude": 4.884}},
+        {"title": "No-rating place", "place_id": "ChIJ5"},
+        {"title": "Fake <script> link", "rating": 4.0, "reviews": 5},
+    ]
+}
+
+
+def weather_daily(start="2026-11-24", days=8, hi=9.0, lo=3.0, precip=2.0, code=61):
+    from datetime import date, timedelta
+    d0 = date.fromisoformat(start)
+    return {"daily": {
+        "time": [(d0 + timedelta(days=i)).isoformat() for i in range(days)],
+        "weather_code": [code] * days, "temperature_2m_max": [hi] * days,
+        "temperature_2m_min": [lo] * days, "precipitation_sum": [precip] * days}}

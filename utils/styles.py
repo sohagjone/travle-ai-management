@@ -111,11 +111,43 @@ h1, h2, h3, h4 { color: var(--navy); letter-spacing: -.01em; }
 }
 
 /* ---------- result cards */
-[class*="st-key-card_flight"], [class*="st-key-card_hotel"] {
+[class*="st-key-card_flight"], [class*="st-key-card_hotel"], [class*="st-key-card_day"],
+[class*="st-key-card_attr"], [class*="st-key-card_wx"], .st-key-card_changes, .st-key-card_pending {
   background: #fff; border-radius: 14px; border-left: 4px solid var(--teal);
-  box-shadow: var(--shadow); transition: box-shadow .15s ease;
+  box-shadow: var(--shadow); transition: box-shadow .15s ease, transform .15s ease;
 }
-[class*="st-key-card_flight"]:hover, [class*="st-key-card_hotel"]:hover { box-shadow: 0 2px 4px rgba(15,42,67,.08), 0 10px 24px rgba(15,42,67,.12); }
+[class*="st-key-card_flight"]:hover, [class*="st-key-card_hotel"]:hover, [class*="st-key-card_attr"]:hover,
+[class*="st-key-card_day"]:hover { box-shadow: 0 2px 4px rgba(15,42,67,.08), 0 10px 24px rgba(15,42,67,.12); }
+[class*="st-key-card_attr"]:hover { transform: translateY(-2px); }
+[class*="st-key-card_wx"] { border-left-color: #38BDF8; text-align: center; }
+.st-key-card_changes, .st-key-card_pending { border-left-color: #F59E0B; background: #FFFBEB; }
+
+/* ---------- workflow ribbon, section titles, cost bar */
+.stepper { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 18px; }
+.step {
+  flex: 1 1 150px; display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 14px; box-shadow: var(--shadow);
+}
+.step .dot {
+  width: 26px; height: 26px; min-width: 26px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-weight: 800; font-size: .85rem; color: #fff; background: #10B981;
+}
+.step.warn .dot { background: #F59E0B; }
+.step .txt { display: flex; flex-direction: column; line-height: 1.15; }
+.step .txt b { color: var(--navy); font-size: .92rem; }
+.step .txt small { color: var(--muted); font-size: .74rem; }
+.section-title { display: flex; align-items: center; gap: 10px; font-size: 1.25rem; font-weight: 800; color: var(--navy); margin: 8px 0 12px; }
+.section-title .ico {
+  width: 36px; height: 36px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--teal-tint); font-size: 1.1rem;
+}
+.section-title .sub { margin-left: 6px; padding: 2px 10px; border-radius: 999px; background: #EEF2F7; color: var(--muted); font-size: .76rem; font-weight: 600; }
+.costbar { display: flex; height: 16px; border-radius: 999px; overflow: hidden; background: #E2E8F0; margin: 12px 0 6px; }
+.costlegend { margin-bottom: 10px; }
+.costlegend .lg { display: inline-block; margin-right: 16px; font-size: .8rem; font-weight: 600; color: var(--navy); }
+.costlegend .lg i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+[data-testid="stChatMessage"] { background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+[data-testid="stTabs"] [role="tablist"] { overflow-x: auto; }
 
 [data-testid="stMetric"] {
   background: #fff; border: 1px solid var(--line); border-top: 3px solid var(--teal);
@@ -156,6 +188,7 @@ hr { border-color: var(--line); }
 @media (max-width: 800px) {
   .hero { padding-bottom: 170px; }
   .hero .links { display: none; }
+  .step { flex: 1 1 100%; }
   .hero h1 { font-size: 2.1rem; margin-top: 24px; }
   .hero p { font-size: 1rem; }
   .st-key-card_form { margin-top: -130px; padding: .8rem 1rem; }
@@ -167,15 +200,15 @@ HERO = """
 <div class="hero">
   <div class="nav">
     <span class="brand"><span class="logo">✈</span>AI Travel Analysis</span>
-    <span class="links"><span class="active">Trip Planner</span><span>Flights</span><span>Hotels</span><span>Reports</span></span>
+    <span class="links"><span class="active">Trip Planner</span><span>Flights</span><span>Hotels</span><span>Attractions</span><span>Weather</span><span>Budget</span></span>
   </div>
   <h1>Find your perfect trip, faster.</h1>
-  <p>Compare flights and hotels, filter instantly, and download a ready-to-share report.</p>
+  <p>Flights, hotels, attractions, weather and budget in one place, with a day-by-day plan you can download.</p>
 </div>
 """
 
 FEATURE_CHIPS = """
 <div class="chips-row">
-  <span>✈️ Compare flights</span><span>🏨 Compare hotels</span><span>🔎 Filter instantly</span><span>📄 Download reports</span>
+  <span>✈️ Flights</span><span>🏨 Hotels</span><span>🎯 Attractions</span><span>🌤 Weather</span><span>💰 Trip cost</span><span>💬 Ask follow-ups</span>
 </div>
 """

@@ -11,6 +11,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .report_data import (
+    ATTRACTION_COLUMNS,
+    WEATHER_COLUMNS,
     FLIGHT_COLUMNS,
     HOTEL_COLUMNS,
     Column,
@@ -137,6 +139,29 @@ def build_excel(report: Dict[str, Any]) -> bytes:
     # --- Hotel Options
     _write_table(wb.create_sheet("Hotel Options"), HOTEL_COLUMNS, report["hotels"], currency, "No hotel options were returned for this search.")
 
+    # --- Attractions / Weather / Trip Plan
+    _write_table(wb.create_sheet("Attractions"), ATTRACTION_COLUMNS, report.get("attractions", []), currency, "No attractions were returned for this destination.")
+    _write_table(wb.create_sheet("Weather"), WEATHER_COLUMNS, (report.get("weather") or {}).get("days", []), currency, "No weather data was available for these dates.")
+    ws = wb.create_sheet("Trip Plan")
+    for c, (h, w) in enumerate([("Day", 14), ("Date", 12), ("Weather", 36), ("Suggested attractions", 70)], start=1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.fill, cell.font, cell.border = HEADER_FILL, HEADER_FONT, BORDER
+        ws.column_dimensions[get_column_letter(c)].width = w
+    ws.freeze_panes = "A2"
+    if not report.get("plan"):
+        ws.cell(row=2, column=1, value="No plan could be built.")
+    for r, day in enumerate(report.get("plan", []), start=2):
+        w = day.get("weather") or {}
+        wtxt = ""
+        if w:
+            wtxt = f"{w.get('summary')}, {'n/a' if w.get('tmin') is None else round(w['tmin'])} to {'n/a' if w.get('tmax') is None else round(w['tmax'])} °C" + (" (typical)" if w.get("mode") == "typical" else "")
+        _set(ws.cell(row=r, column=1), day["label"])
+        _set(ws.cell(row=r, column=2), day["date"])
+        _set(ws.cell(row=r, column=3), wtxt)
+        cell = ws.cell(row=r, column=4)
+        _set(cell, "; ".join(a["name"] for a in day["attractions"]) or "Free time / travel")
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
     # --- Recommendations (+ cost estimate)
     ws = wb.create_sheet("Recommendations")
     ws.column_dimensions["A"].width = 38
@@ -184,6 +209,27 @@ def build_excel(report: Dict[str, Any]) -> bytes:
     for text in report["cost_estimate"]["excluded"]:
         ws.cell(row=row, column=1, value="- " + text)
         row += 1
+
+    # --- Trip Budget (only when the user entered a budget)
+    budget = report.get("budget")
+    if budget and budget.get("items"):
+        ws = wb.create_sheet("Trip Budget")
+        for c, (h, w) in enumerate([("Category", 18), ("Item", 44), ("Source", 52), (f"Amount ({currency})", 16)], start=1):
+            cell = ws.cell(row=1, column=c, value=h)
+            cell.fill, cell.font, cell.border = HEADER_FILL, HEADER_FONT, BORDER
+            ws.column_dimensions[get_column_letter(c)].width = w
+        r = 2
+        for item in budget["items"]:
+            _set(ws.cell(row=r, column=1), item["category"]); _set(ws.cell(row=r, column=2), item["label"]); _set(ws.cell(row=r, column=3), item["basis"])
+            amt = ws.cell(row=r, column=4, value=item["amount"]); amt.number_format = _money_format(currency)
+            r += 1
+        ws.cell(row=r, column=1, value="Total" + ("" if budget.get("complete") else " (INCOMPLETE: flight or hotel price missing)")).font = Font(bold=True)
+        t = ws.cell(row=r, column=4, value=budget["total"]); t.number_format = _money_format(currency); t.font = Font(bold=True)
+        r += 1
+        conv = budget.get("converted")
+        if conv:
+            ws.cell(row=r, column=1, value=f"Total in {conv['currency']} (indicative rate 1 {currency} = {conv['rate']:.4f} {conv['currency']}, updated {conv.get('updated') or 'n/a'})")
+            c = ws.cell(row=r, column=4, value=conv["total"]); c.number_format = _money_format(conv["currency"])
 
     # --- Sources and Notes
     ws = wb.create_sheet("Sources and Notes")

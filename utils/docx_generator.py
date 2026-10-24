@@ -12,6 +12,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from .report_data import (
+    ATTRACTION_COLUMNS,
     FLIGHT_COLUMNS,
     HOTEL_COLUMNS,
     clean_text,
@@ -136,6 +137,24 @@ def build_docx(report: Dict[str, Any]) -> bytes:
         _cell_text(cells[2], fmt_money(sc["total"], currency), bold=True)
     doc.add_paragraph("Not included: " + "; ".join(report["cost_estimate"]["excluded"]) + ".").runs[0].font.size = Pt(8)
 
+    budget = report.get("budget")
+    if budget and budget.get("items"):
+        doc.add_heading("Trip budget", 1)
+        t = doc.add_table(rows=1, cols=4)
+        t.style = "Light Grid Accent 1"
+        for c, h in zip(t.rows[0].cells, ["Category", "Item", "Source", f"Amount ({currency})"]):
+            _cell_text(c, h, bold=True)
+        for item in budget["items"]:
+            cells = t.add_row().cells
+            for cell, text in zip(cells, [item["category"], item["label"], item["basis"], fmt_money(item["amount"], currency)]):
+                _cell_text(cell, text)
+        cells = t.add_row().cells
+        _cell_text(cells[0], "Total" + ("" if budget.get("complete") else " (INCOMPLETE)"), bold=True)
+        _cell_text(cells[3], fmt_money(budget["total"], currency), bold=True)
+        conv = budget.get("converted")
+        if conv:
+            doc.add_paragraph(f"Converted total: {fmt_money(conv['total'], conv['currency'])} (1 {currency} = {conv['rate']:.4f} {conv['currency']}; indicative rate, updated {conv.get('updated') or 'n/a'}).")
+
     doc.add_heading(f"Flight options ({len(report['flights'])})", 1)
     if not report["flights"]:
         doc.add_paragraph("No flight options were returned for this search.")
@@ -177,6 +196,57 @@ def build_docx(report: Dict[str, Any]) -> bytes:
                 _add_hyperlink(cells[-1].paragraphs[0], url, "Open")
             else:
                 _cell_text(cells[-1], "n/a")
+
+    if report.get("plan"):
+        doc.add_heading("Suggested day-by-day plan", 1)
+        doc.add_paragraph("Built from the returned attractions and weather. Places are grouped by proximity; opening hours are not checked.").runs[0].font.size = Pt(8)
+        for day in report["plan"]:
+            w = day.get("weather")
+            wtxt = ""
+            if w:
+                wtxt = f" - {w.get('summary')}, {'n/a' if w.get('tmin') is None else round(w['tmin'])} to {'n/a' if w.get('tmax') is None else round(w['tmax'])} °C" + (" (typical)" if w.get("mode") == "typical" else "")
+            p = doc.add_paragraph()
+            p.add_run(f"{day['label']} - {day['date']}").bold = True
+            p.add_run(clean_text(wtxt))
+            for a in day["attractions"]:
+                doc.add_paragraph(clean_text(a["name"] + (f" ({a['rating']:.1f})" if a.get("rating") is not None else "")), style="List Bullet")
+
+    doc.add_heading(f"Tourist attractions ({len(report.get('attractions', []))})", 1)
+    if not report.get("attractions"):
+        doc.add_paragraph("No attractions were returned for this destination.")
+    else:
+        cols = [c for c in ATTRACTION_COLUMNS if c.key in ("option", "name", "type", "rating", "reviews")]
+        t = doc.add_table(rows=1, cols=len(cols) + 1)
+        t.style = "Light Grid Accent 1"
+        for c, h in zip(t.rows[0].cells, [c.header for c in cols] + ["Map"]):
+            _cell_text(c, h, bold=True)
+        for row in report["attractions"]:
+            cells = t.add_row().cells
+            for cell, col in zip(cells, cols):
+                _cell_text(cell, display_value(row, col))
+            url = safe_http_url(row.get("map_url"))
+            cells[-1].text = ""
+            if url:
+                _add_hyperlink(cells[-1].paragraphs[0], url, "Open")
+            else:
+                _cell_text(cells[-1], "n/a")
+
+    doc.add_heading("Weather", 1)
+    days = (report.get("weather") or {}).get("days") or []
+    if not days:
+        doc.add_paragraph("No weather data was available for these dates.")
+    else:
+        t = doc.add_table(rows=1, cols=5)
+        t.style = "Light Grid Accent 1"
+        for c, h in zip(t.rows[0].cells, ["Date", "Basis", "Conditions", "High / Low (°C)", "Rain"]):
+            _cell_text(c, h, bold=True)
+        for d_ in days:
+            hi = "n/a" if d_.get("tmax") is None else f"{d_['tmax']:.0f}"
+            lo = "n/a" if d_.get("tmin") is None else f"{d_['tmin']:.0f}"
+            rain = f"{d_['rain_chance']}% chance" if d_.get("rain_chance") is not None else ("n/a" if d_.get("precip") is None else f"{d_['precip']:.1f} mm")
+            cells = t.add_row().cells
+            for cell, text in zip(cells, [d_["date"], d_.get("mode_label", ""), d_.get("summary", ""), f"{hi} / {lo}", rain]):
+                _cell_text(cell, text)
 
     doc.add_heading("Data sources", 1)
     for s in report["sources"]:
